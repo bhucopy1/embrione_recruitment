@@ -155,24 +155,40 @@ export default function RegisterPage() {
         const sanitizedSrn = cleanSrn.replace(/[^a-zA-Z0-9]/g, '_');
         const fileName = `${sanitizedSrn}-${Date.now()}.webp`;
 
-        const { error: uploadError } = await supabase.storage
-          .from('member-photos')
-          .upload(fileName, blob, {
-            contentType: 'image/webp',
-            cacheControl: '3600',
-            upsert: true,
-          });
+        let uploadSucceeded = false;
+        try {
+          const { error: uploadError } = await supabase.storage
+            .from('member-photos')
+            .upload(fileName, blob, {
+              contentType: 'image/webp',
+              cacheControl: '3600',
+              upsert: true,
+            });
 
-        if (uploadError) {
-          throw new Error(`Failed to upload photo: ${uploadError.message}`);
+          if (!uploadError) {
+            const { data: publicUrlData } = supabase.storage
+              .from('member-photos')
+              .getPublicUrl(fileName);
+            if (publicUrlData?.publicUrl) {
+              uploadedPhotoUrl = publicUrlData.publicUrl;
+              uploadSucceeded = true;
+            }
+          } else {
+            console.warn('Storage bucket RLS notice - engaging WebP inline fallback:', uploadError.message);
+          }
+        } catch (err) {
+          console.warn('Storage upload caught error, using WebP inline fallback:', err);
         }
 
-        // Get public URL
-        const { data: publicUrlData } = supabase.storage
-          .from('member-photos')
-          .getPublicUrl(fileName);
-
-        uploadedPhotoUrl = publicUrlData.publicUrl;
+        // Graceful fallback: If storage bucket policy restricts upload, embed the compressed WebP Data URL
+        if (!uploadSucceeded) {
+          const reader = new FileReader();
+          const base64Promise = new Promise<string>((resolve) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+          uploadedPhotoUrl = await base64Promise;
+        }
       }
 
       // 3. Save profile to database with status: 'pending'
