@@ -67,8 +67,8 @@ export default function TeamDirectoryPage() {
   const handleSeedData = async () => {
     setIsSeeding(true);
     try {
-      await seedMockProfiles();
-      setNotification('Seeded 6 sample Embrione profiles successfully!');
+      const result = await seedMockProfiles();
+      setNotification(result.message);
       await fetchApprovedMembers();
       setTimeout(() => setNotification(null), 4000);
     } catch (err: unknown) {

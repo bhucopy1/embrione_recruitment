@@ -94,12 +94,90 @@ export const INITIAL_MOCK_PROFILES: Omit<Member, 'id' | 'created_at'>[] = [
 ];
 
 /**
- * Seeds sample profiles to Supabase if table is empty or has no approved profiles.
+ * Deduplicates any duplicate profiles in the database by SRN,
+ * keeping only the earliest created entry for each SRN.
  */
-export async function seedMockProfiles(): Promise<number> {
-  const { error } = await supabase.from('members').insert(INITIAL_MOCK_PROFILES);
-  if (error) {
-    throw new Error(`Failed to seed data: ${error.message}`);
+export async function deduplicateMembers(): Promise<number> {
+  const { data: allMembers, error } = await supabase
+    .from('members')
+    .select('id, srn, created_at')
+    .order('created_at', { ascending: true });
+
+  if (error || !allMembers) return 0;
+
+  const seenSrns = new Set<string>();
+  const idsToDelete: string[] = [];
+
+  for (const member of allMembers) {
+    const normalizedSrn = member.srn.toUpperCase();
+    if (seenSrns.has(normalizedSrn)) {
+      if (member.id) idsToDelete.push(member.id);
+    } else {
+      seenSrns.add(normalizedSrn);
+    }
   }
-  return INITIAL_MOCK_PROFILES.length;
+
+  if (idsToDelete.length > 0) {
+    const { error: delError } = await supabase
+      .from('members')
+      .delete()
+      .in('id', idsToDelete);
+    if (delError) {
+      console.warn('Failed to delete duplicate rows:', delError.message);
+    }
+  }
+
+  return idsToDelete.length;
+}
+
+/**
+ * Seeds sample profiles to Supabase idempotently:
+ * 1. Cleans up any existing duplicate copies first.
+ * 2. Only inserts profiles whose SRNs do not already exist.
+ */
+export async function seedMockProfiles(): Promise<{
+  inserted: number;
+  cleaned: number;
+  message: string;
+}> {
+  // 1. Clean up any existing duplicates first
+  const cleaned = await deduplicateMembers();
+
+  // 2. Check which mock profiles already exist in the database
+  const mockSrns = INITIAL_MOCK_PROFILES.map((p) => p.srn.toUpperCase());
+  const { data: existing } = await supabase
+    .from('members')
+    .select('srn')
+    .in('srn', mockSrns);
+
+  const existingSrns = new Set(
+    (existing || []).map((m) => m.srn.toUpperCase())
+  );
+
+  const profilesToInsert = INITIAL_MOCK_PROFILES.filter(
+    (p) => !existingSrns.has(p.srn.toUpperCase())
+  );
+
+  if (profilesToInsert.length > 0) {
+    const { error } = await supabase.from('members').insert(profilesToInsert);
+    if (error) {
+      throw new Error(`Failed to seed data: ${error.message}`);
+    }
+    return {
+      inserted: profilesToInsert.length,
+      cleaned,
+      message: `Seeded ${profilesToInsert.length} sample profile${
+        profilesToInsert.length > 1 ? 's' : ''
+      }${cleaned > 0 ? ` and cleaned ${cleaned} duplicate(s)` : ''}!`,
+    };
+  }
+
+  return {
+    inserted: 0,
+    cleaned,
+    message:
+      cleaned > 0
+        ? `Cleaned up ${cleaned} duplicate profile(s). Directory now has the unique 6 members!`
+        : 'All 6 sample profiles are already loaded (no duplicates created).',
+  };
 }
